@@ -31,8 +31,8 @@ public:
     const Word W2_SIEB    = { 0,  2, 4};
     const Word W2_SIEBEN  = { 0,  2, 6};
     const Word W2_NEUN    = { 5,  2, 4};
-    const Word W2_NACHT   = { 8,  2, 5};
     const Word W2_NACH    = { 8,  2, 4};
+    const Word W2_NACHT   = { 8,  2, 5};
     const Word W2_ACHT    = { 9,  2, 4};
 
     const Word W3_ZWOELF  = { 0,  3, 5};

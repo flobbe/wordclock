@@ -1,148 +1,203 @@
 // -*- mode: c -*-
 
-#include <avr/io.h>
-#include <Time.h>       // http://www.arduino.cc/playground/Code/Time
-#include <DS1307RTC.h>  // https://github.com/PaulStoffregen/DS1307RTC
-#include <DCF77.h>      // https://github.com/thijse/Arduino-Libraries/downloads
+#if defined(ESP32)
+    #include <WiFi.h>
+    #include <ESPmDNS.h>
+#elif defined(ESP8266)
+    #include <ESP8266WiFi.h>
+    #include <ESP8266mDNS.h>
+    #include <DNSServer.h>
+#else
+    #error Only tested with ESP32. OTA and telnet debugging require wifi, so the esp8266 may work as well. I have no idea about other devices.
+#endif
+
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
+#include <time.h>
 
 #include "configuration.h"
-#include "assertions.h"
-#include "logging.h"
-#include "BlinkLed.h"
 #include "LedMatrix.h"
 
-#ifdef DEBUG_DCF77_SIGNAL
-    #include "DCF77SignalInfo.h"
-#endif
 
 
 // --------------------------------------------------
 
+uint32_t gProcessTimeMainLoop;
+uint32_t gProcessTimeTaskLoop;
 
-time_t    system_time = 0;
+time_t    previous_time = 0;
 
-bool      rtc_found;             // real time clock module is connected and running
-
-DCF77     dcf = DCF77(DCF77_PIN, DCF77_INTERRUPT);
-#ifdef DEBUG_DCF77_SIGNAL
-    DCF77SignalInfo dcf_info;
-#endif
-
-bool      do_sync;               // RTC and system time should be updated by the DCF77 time signal
-time_t    last_sync_from_dcf77;  // last time, RTC and system time was updated
-
-BlinkLed  blink_led = BlinkLed(50, 50);
+time_t    last_sync_time;  // last time, system time was updated from ntp server
 
 LedMatrix led_matrix;
 
 
 // --------------------------------------------------
 
+#define LOG_PRINTFLN(fmt, ...)  printfln_P(PSTR(fmt), ##__VA_ARGS__)
+#define LOG_SIZE_MAX 256
+void printfln_P(const char *fmt, ...)
+{
+    char buf[LOG_SIZE_MAX];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf_P(buf, LOG_SIZE_MAX, fmt, ap);
+    va_end(ap);
+    Serial.println(buf);
+}
+
+// --------------------------------------------------
+
+void initWiFi()
+{
+    Serial.printf("Connecting to WiFi %s ", WIFI_SSID);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        delay(500);
+        Serial.printf(".");
+    }
+    Serial.printf(" done\n");
+    Serial.printf("IP address: ");
+    Serial.println(WiFi.localIP());
+//    LOG_PRINTFLN("Connected to WiFi");
+//    LOG_PRINTFLN("IP: %s", WiFi.localIP().toString().c_str());
+}
+
+void getNTPTime()
+{
+    // request time from ntp server
+    configTime(0, 0, TIME_NTP_SERVER);
+    setenv("TZ", TIME_POSIX_TIMEZONE_STR, 1);
+    tzset();
+
+    // check validity of local time
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo))
+    {
+      LOG_PRINTFLN("received ntp time");
+      time(&last_sync_time);
+    }
+    else
+    {
+      LOG_PRINTFLN("ERROR: Could not determine the time! Make sure the ntp server is accessible (check wifi and dns).");
+      // TODO: set led_matrix to error screen
+    }
+}
+
+void initOTA()
+{
+    ArduinoOTA.setHostname(THIS_HOST_NAME);
+    ArduinoOTA.onStart([]()
+                {
+                })
+              .onEnd([]()
+                {
+                    ESP.restart();
+                })
+              .onProgress([](unsigned int progress, unsigned int total)
+                {
+                    static uint8_t lastPercent = 100;
+                    uint8_t percent = progress / (total / 100);
+                    led_matrix.setUpdateProgress(progress, total);
+                    if (percent != lastPercent)
+                    {
+                        Serial.printf("Progress: %u / %u = %u %%\r", progress, total, percent);
+                        lastPercent = percent;
+                    }
+                })
+              .onError([](ota_error_t error)
+                {
+                    if (error == OTA_AUTH_ERROR)         LOG_PRINTFLN("OTAError[%u]: Auth Failed",    error);
+                    else if (error == OTA_BEGIN_ERROR)   LOG_PRINTFLN("OTAError[%u]: Begin Failed",   error);
+                    else if (error == OTA_CONNECT_ERROR) LOG_PRINTFLN("OTAError[%u]: Connect Failed", error);
+                    else if (error == OTA_RECEIVE_ERROR) LOG_PRINTFLN("OTAError[%u]: Receive Failed", error);
+                    else if (error == OTA_END_ERROR)     LOG_PRINTFLN("OTAError[%u]: End Failed",     error);
+                });
+    ArduinoOTA.begin();
+}
+
 
 // the setup routine
 void setup()
 {
-    // start serial port
-#if (LOG_LEVEL > LOG_LEVEL_NONE)
-    LOG_PRINTER.begin(9600);
-//    while (!LOG_PRINTER);
-#endif
+    Serial.begin(115200);
 
-    // DCF77 module
-    pinMode(DCF77_PIN, INPUT);
-    dcf.Start();  // attach interrupt on input pin
+    //          Task function and name, Stack size in bytes, Input Parameters, Priority, Task handle.
+    xTaskCreate(taskLED, "LED Task", 10000, NULL, 2, NULL);
 
-    // RTC module
-    RTC.get();                      // try to communicate with the RTC module
-    rtc_found = RTC.chipPresent();  // ... and check if it worked
-    if (rtc_found)
-    {
-        setSyncProvider(RTC.get);   // automatically update system time from real time clock module
-        setSyncInterval(SYNC_INTERVAL_FROM_RTC);
-        last_sync_from_dcf77 = now();
-    }
-    else
-    {
-        LOG_WARN("No real time clock found!\n");
-        last_sync_from_dcf77 = 0;   // force update from DCF77 signal
-    }
+    initWiFi();
 
-    random16_set_seed(RTC.get());
+    getNTPTime();
 
-    blink_led.setup();
-
-    led_matrix.setup();
+    xTaskCreate(taskOTA, "OTA Task", 10000, NULL, 1, NULL);
 }
 
 
 // the main loop
 void loop()
 {
-#ifdef DEBUG_DCF77_SIGNAL
-    do_sync = true;
-    dcf_info.processSignal(digitalRead(DCF77_PIN));
-#endif
+    uint32_t timeBeginLoop = millis();  // for main loop watchdog
 
-    time_t time = now();  // system time (seconds since 1970-01-01)
+    time_t now;
 
-    if (time != system_time)  // update only if time has changed
+#if TIME_SIMULATION
+    delay(1000 / TIME_SIMULATION_FACTOR);
+    now = previous_time + 1;
+#else
+    time(&now);  // get system time (seconds since 1970-01-01)
+
+    if (now - last_sync_time > TIME_SYNC_INTERVAL_SEC)
     {
-        system_time = time;
-
-        led_matrix.setTime(hour(), minute(), second());
-//        led_matrix.setTime(now() / 3 / 60 % 12, now() / 3 % 60);  // update every 3 seconds
-
-        LOG_DEBUG("time: %d-%02d-%02d %02d:%02d:%02d%s\n",
-                  year(), month(), day(), hour(), minute(), second(),
-                  (timeStatus() == timeNotSet)    ? " (not set)" :
-                  (timeStatus() == timeNeedsSync) ? " (needs sync from rtc)" : "");
-#ifdef DEBUG_DCF77_SIGNAL
-        LOG_DEBUG("DCF77 signal quality: %3d%%\r\n", dcf_info.getSignalQuality());
-#endif
+        getNTPTime();
     }
+#endif
 
-    if (do_sync)
+    if (now != previous_time)  // update only if time (seconds) has changed
     {
-        time_t dcf77_time = dcf.getTime();
-        if (dcf77_time != 0)
+        previous_time = now;
+
+        struct tm *timeinfo = localtime(&now);
+
+        // only print on minute changes
+        if (timeinfo->tm_sec == 0)
         {
-            LOG_INFO("DCF77 time received: %d-%02d-%02d %02d:%02d:%02d\n",
-                     year(dcf77_time), month(dcf77_time), day(dcf77_time),
-                     hour(dcf77_time), minute(dcf77_time), second(dcf77_time));
-            // update real time clock
-            if (RTC.set(dcf77_time))
-            {
-                setSyncProvider(RTC.get);  // force system time to be updated as well
-                LOG_INFO("Real time clock and system time updated.\n");
-            }
-            else
-            {
-                setTime(dcf77_time);  // set system time directly from DCF77 signal
-                LOG_WARN("Failed to update real time clock!\n");
-            }
-            last_sync_from_dcf77 = now();
-            do_sync = false;
+            LOG_PRINTFLN("%4d-%02d-%02d %02d:%02d:%02d   dst=%d   looptime=%lu ms",
+                       timeinfo->tm_year+1900, timeinfo->tm_mon+1, timeinfo->tm_mday,
+                       timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec, timeinfo->tm_isdst,
+                       gProcessTimeTaskLoop);
         }
-    }
-    else if ((now() - last_sync_from_dcf77) > SYNC_INTERVAL_FROM_DCF77)
-    {
-        LOG_INFO("Sync local time from DCF77 signal...\n");
-        led_matrix.update();
-        do_sync = true;
+
+        led_matrix.setTime(timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec);
     }
 
-    // disable led matrix while dcf77 time signal is processing
-    led_matrix.enabled(! do_sync);
+    // main loop watchdog
+    gProcessTimeMainLoop = (millis() - timeBeginLoop);
+}
 
-    EVERY_N_MILLIS(5)
+
+void taskLED(void* parameter)
+{
+    led_matrix.setup();
+    
+    while (true)
     {
-        if (do_sync)
-            blink_led.setInterval(5, 245);  // blink fast while syncing
-        else
-            blink_led.setInterval(5, 995);  // slow otherwise
-        blink_led.update();
+        uint32_t timeBeginLoop = millis();
 
         led_matrix.update();
-    }
+        vTaskDelay(1);
 
+        gProcessTimeTaskLoop = (millis() - timeBeginLoop);
+    }
+}
+ 
+void taskOTA(void* parameter)
+{
+    initOTA();
+    while (true)
+    {
+        ArduinoOTA.handle();
+        vTaskDelay(100);
+    }
 }

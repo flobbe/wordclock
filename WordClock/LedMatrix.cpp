@@ -2,74 +2,62 @@
 #include "LedMatrix.h"
 
 #include "assertions.h"
-#include "logging.h"
 
 
-LedMatrix::LedMatrix()
+LedMatrix::LedMatrix() :
+  leds_(LedMatrix_leds_)
 {
-    this->enabled_                = true;
     this->needs_update_           = true;
     this->hour_                   = 0;
     this->minute_                 = 0;
     this->second_                 = 0;
     this->current_state_          = S_SPLASH_SCREEN;
-    this->current_splash_idx_     = 0;
+    this->current_splash_idx_     = 1;
     this->current_transition_idx_ = 0;
+    this->update_screen_progress_ = 0;
+    this->color_words_            = WHITE;
+
+    // if analog input pin 0 is unconnected, random analog noise will cause the call to randomSeed() to generate
+    // different seed numbers each time the sketch runs. randomSeed() will then shuffle the random function.
+    randomSeed(analogRead(0));
 }
 
 void LedMatrix::setup()
 {
-    FastLED.addLeds<MATRIX_LED_CHIPSET, MATRIX_LED_PIN, MATRIX_LED_COLOR_ORDER>(this->leds_, LED_CNT);
-    FastLED.setBrightness(MATRIX_LED_BRIGHTNESS);
-    FastLED.setMaxPowerInMilliWatts(MATRIX_LED_MAX_POWER_MW);
-    FastLED.clear();
-    FastLED.show();
-
-    uint8_t idx = 0;
-    for (uint8_t x = MATRIX_WIDTH/2; x < MATRIX_WIDTH; x++, idx++)
-        this->leds_outline_[idx] = & this->leds_[xy(x, 0)];
-    for (uint8_t y = 1; y < MATRIX_HEIGHT; y++, idx++)
-        this->leds_outline_[idx] = & this->leds_[xy(MATRIX_WIDTH-1, y)];
-    for (uint8_t x = MATRIX_WIDTH-2; x > 0; x--, idx++)
-        this->leds_outline_[idx] = & this->leds_[xy(x, MATRIX_HEIGHT-1)];
-    for (uint8_t y = MATRIX_HEIGHT-1; y > 0; y--, idx++)
-        this->leds_outline_[idx] = & this->leds_[xy(0, y)];
-    for (uint8_t x = 0; x < MATRIX_WIDTH/2; x++, idx++)
-        this->leds_outline_[idx] = & this->leds_[xy(x, 0)];
-
-//    uint8_t splash_count = sizeof(SPLASH_FUNCTIONS) / sizeof(SPLASH_FUNCTIONS[0]);
-//    uint8_t trans_count  = sizeof(TRANSITION_FUNCTIONS) / sizeof(TRANSITION_FUNCTIONS[0]);
-//    this->current_splash_idx_     = random8(splash_count);
-//    this->current_transition_idx_ = random8(trans_count);
-//    LOG_DEBUG("LedMatrix: splash function     = %d (of %d)\n", this->current_splash_idx_, splash_count);
-//    LOG_DEBUG("LedMatrix: transition function = %d (of %d)\n", this->current_transition_idx_, trans_count);
+    this->leds_.Begin();
+    this->setBrightness(MATRIX_LED_BRIGHTNESS);
+    this->leds_.ClearTo({0, 0, 0});
+    this->leds_.Show();
 }
 
 void LedMatrix::update()
 {
-    if (this->enabled_)
+    static uint32_t lastTrigger = millis();
+
+    if (this->needs_update_)
     {
-
-        if (this->needs_update_)
+        if (this->current_state_ == S_SPLASH_SCREEN)
         {
-
-            if (this->current_state_ == S_SPLASH_SCREEN)
+            if ((this->*SPLASH_FUNCTIONS[this->current_splash_idx_])())
             {
-                if ((this->*SPLASH_FUNCTIONS[this->current_splash_idx_])())
-                    changeState(S_TIME_MODE);
+                changeState(S_TIME_MODE);
             }
-            else if (this->current_state_ == S_TIME_MODE)
-            {
-                if ((this->*TRANSITION_FUNCTIONS[this->current_transition_idx_])())
-                    this->needs_update_ = false;
-            }
-
         }
-        else
+        else if (this->current_state_ == S_TIME_MODE)
         {
-            EVERY_N_SECONDS(2) nextEffect();
+            if ((this->*TRANSITION_FUNCTIONS[this->current_transition_idx_])())
+            {
+                this->needs_update_ = false;
+            }
         }
-
+    }
+    else
+    {
+        if (millis() - lastTrigger > 2000) // execute every n seconds
+        {
+            lastTrigger = millis();
+            nextEffect();
+        }
     }
 }
 
@@ -81,29 +69,46 @@ void LedMatrix::setTime(const uint8_t hour, const uint8_t minute, const uint8_t 
     if (h != this->hour_ || m != this->minute_ || s != this->second_)
     {
         word_frame_.fromTime(h, m);
-        {
-            *(this->leds_outline_[this->second_]) = CRGB::Red;
-            FastLED.show();
-        }
         this->hour_         = h;
         this->minute_       = m;
         this->second_       = s;
+        this->millis_delta_ = millis() % 1000;
         this->needs_update_ = true;
     }
 }
 
-void LedMatrix::enabled(const bool e)
+void LedMatrix::setSplashScreen(uint8_t splash_idx)
 {
-    if (e != this->enabled_)
-    {
-        this->enabled_ = e;
-        if (e)
-            this->needs_update_ = true;
-        else
-            disableLEDs();
-    }
+    this->current_splash_idx_ = splash_idx % 2;
+    changeState(S_SPLASH_SCREEN);
 }
 
+void LedMatrix::setBrightness(uint8_t value)
+{
+    this->leds_.SetBrightness(value);
+    this->needs_update_ = true;
+}
+
+void LedMatrix::setWordColor(uint8_t red, uint8_t green, uint8_t blue)
+{
+// NOT YET IMPLEMENTED
+//    this->color_words_  = RgbColor(red, green, blue);
+//    this->needs_update_ = true;
+}
+
+void LedMatrix::setUpdateProgress(unsigned int progress, unsigned int total)
+{
+    changeState(S_FWUPDATE_SCREEN);
+    uint8_t pos = progress * LED_CNT / total;
+    if (pos != this->update_screen_progress_)
+    {
+        this->update_screen_progress_ = pos;
+        RgbColor c = RgbColor::LinearBlend(RED, GREEN, (float)progress / total);
+        for (uint8_t i = 0; i < LED_CNT; i++)
+            this->leds_.SetPixelColor(xy(i % MATRIX_WIDTH, i / MATRIX_WIDTH), (i <= pos) ? c : BLACK);
+        this->leds_.Show();
+    }
+}
 
 // ----- private methods -----
 
@@ -125,8 +130,8 @@ void LedMatrix::nextEffect()
 
 void LedMatrix::disableLEDs()
 {
-    FastLED.clear();
-    FastLED.show();
+    this->leds_.ClearTo({0,0,0});
+    this->leds_.Show();
 }
 
 uint16_t LedMatrix::xy(const uint8_t x, const uint8_t y)
@@ -141,24 +146,26 @@ uint16_t LedMatrix::xy(const uint8_t x, const uint8_t y)
 
 bool LedMatrix::splashRandom()
 {
+    static uint32_t lastTrigger = millis();
+
     bool finished = false;
-    EVERY_N_MILLIS(40)
+    if (millis() - lastTrigger > 10) // execute every n milliseconds
     {
-        uint8_t x          = random8() % MATRIX_WIDTH;
-        uint8_t y          = random8() % MATRIX_HEIGHT;
+        lastTrigger = millis();
+        uint8_t x          = random(MATRIX_WIDTH);
+        uint8_t y          = random(MATRIX_HEIGHT);
         uint8_t index      = xy(x, y);
         bool    all_active = false;
 
         uint8_t i = index;
-        while (!all_active && this->leds_[i])
+        while (!all_active && this->leds_.GetPixelColor(i).CalculateBrightness() > 0)
         {
             i          = (i + 1) % LED_CNT;
             all_active = (i == index);
         }
 
-        this->leds_[i] = CRGB::White;
-        FastLED.show();
-
+        this->leds_.SetPixelColor(i, this->color_words_);
+        this->leds_.Show();
         finished = all_active;
     }
     return finished;
@@ -186,22 +193,29 @@ const void LedMatrix::snakeStep(uint8_t *x, uint8_t *y)
 
 bool LedMatrix::splashSnake()
 {
+    static uint32_t lastTrigger = millis();
+
     bool finished = false;
-    EVERY_N_MILLIS(30)
+    if (millis() - lastTrigger > 30) // execute every n milliseconds
     {
+        lastTrigger = millis();
         static uint8_t hue = 0;
         static uint8_t x = 0;
         static uint8_t y = 0;
 
         // fade everything out a bit
         for (uint8_t i = 0; i < LED_CNT; i++)
-            if ((this->leds_[i].r + this->leds_[i].g + this->leds_[i].b) > 180)
-                this->leds_[i].fadeToBlackBy(20);
+            if (this->leds_.GetPixelColor(i).CalculateBrightness() > 180)
+            {
+                RgbColor c = this->leds_.GetPixelColor(i);
+                c.Darken(20);
+                this->leds_.SetPixelColor(i, c);
+            }
 
         // and reactivate current pixel
-        this->leds_[xy(x, y)] = CHSV(hue, 255, 255);
+        this->leds_.SetPixelColor(xy(x, y), HsbColor(hue, 255, 255));
 
-        FastLED.show();
+        this->leds_.Show();
         hue += 2;
 
         // move it
@@ -214,9 +228,12 @@ bool LedMatrix::splashSnake()
 
 bool LedMatrix::splashSnake2()
 {
+    static uint32_t lastTrigger = millis();
+
     bool finished = false;
-    EVERY_N_MILLIS(30)
+    if (millis() - lastTrigger > 30) // execute every n milliseconds
     {
+        lastTrigger = millis();
         static uint8_t goal_hue = 0;
         static uint8_t goal_x = 0;
         static uint8_t goal_y = 0;
@@ -229,11 +246,11 @@ bool LedMatrix::splashSnake2()
         uint8_t y = 0;
         while (x != goal_x || y != goal_y)
         {
-            this->leds_[xy(x, y)] = CHSV(hue, 255, 255);
+            this->leds_.SetPixelColor(xy(x, y), HsbColor(hue, 255, 255));
             hue -= 2;
             snakeStep(&x, &y);
         }
-        FastLED.show();
+        this->leds_.Show();
 
         finished = (goal_x == 0 && goal_y == 0);
     }
@@ -242,27 +259,33 @@ bool LedMatrix::splashSnake2()
 
 bool LedMatrix::transFade()
 {
+    static uint32_t lastTrigger = millis();
+
     bool finished = false;
-    EVERY_N_MILLIS(30)
+    if (millis() - lastTrigger > 0) // execute every n milliseconds
     {
+        lastTrigger = millis();
         finished = true;
         for (uint8_t x = 0; x < MATRIX_WIDTH; x++)
+        {
             for (uint8_t y = 0; y < MATRIX_HEIGHT; y++)
             {
-                CRGB &p = this->leds_[xy(x, y)];
+                RgbColor p = this->leds_.GetPixelColor(xy(x, y));
                 if (this->word_frame_.isSet(x, y))
                 {
-                    p.addToRGB(5);
-                    finished &= (p.r & p.g & p.b) == 0xFF;
+                    p.Lighten(50);
+                    this->leds_.SetPixelColor(xy(x, y), p);
+                    finished &= p.CalculateBrightness() >= 255;
                 }
                 else
                 {
-                    p.subtractFromRGB(10);
-                    finished &= (p.r | p.g | p.b) == 0x00;
+                    p.Darken(10);
+                    this->leds_.SetPixelColor(xy(x, y), p);
+                    finished &= p.CalculateBrightness() <= 0;
                 }
             }
-
-        FastLED.show();
+        }
+        this->leds_.Show();
     }
     return finished;
 }
@@ -270,8 +293,12 @@ bool LedMatrix::transFade()
 bool LedMatrix::transSetHard()
 {
     for (uint8_t x = 0; x < MATRIX_WIDTH; x++)
+    {
         for (uint8_t y = 0; y < MATRIX_HEIGHT; y++)
-            this->leds_[xy(x, y)] = (this->word_frame_.isSet(x, y)) ? CRGB::White : CRGB::Black;
-    FastLED.show();
+        {
+            this->leds_.SetPixelColor(xy(x, y), this->word_frame_.isSet(x, y) ? this->color_words_ : BLACK);
+        }
+    }
+    this->leds_.Show();
     return true;
 }
