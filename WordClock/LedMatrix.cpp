@@ -14,6 +14,7 @@ LedMatrix::LedMatrix() :
     this->current_state_          = S_SPLASH_SCREEN;
     this->current_splash_idx_     = 1;
     this->current_transition_idx_ = 0;
+    this->seconds_mode_           = SECONDS_DOT;
     this->update_screen_progress_ = 0;
     this->color_words_            = WHITE;
 
@@ -73,6 +74,15 @@ void LedMatrix::setTime(const uint8_t hour, const uint8_t minute, const uint8_t 
         this->minute_       = m;
         this->second_       = s;
         this->millis_delta_ = millis() % 1000;
+        this->needs_update_ = true;
+    }
+}
+
+void LedMatrix::setSecondsMode(uint8_t seconds_mode)
+{
+    if (seconds_mode != this->seconds_mode_)
+    {
+        this->seconds_mode_ = seconds_mode;
         this->needs_update_ = true;
     }
 }
@@ -285,6 +295,14 @@ bool LedMatrix::transFade()
                 }
             }
         }
+        if (this->seconds_mode_ == SECONDS_HAND || this->seconds_mode_ == SECONDS_DOT)
+        {
+            drawSecondHand();
+        }
+        else if (this->seconds_mode_ == SECONDS_DECIMAL || this->seconds_mode_ == SECONDS_COUNTDOWN)
+        {
+            drawSecondDigits();
+        }
         this->leds_.Show();
     }
     return finished;
@@ -299,6 +317,228 @@ bool LedMatrix::transSetHard()
             this->leds_.SetPixelColor(xy(x, y), this->word_frame_.isSet(x, y) ? this->color_words_ : BLACK);
         }
     }
+    if (this->seconds_mode_ == SECONDS_HAND || this->seconds_mode_ == SECONDS_DOT)
+    {
+        drawSecondHand();
+    }
+    else if (this->seconds_mode_ == SECONDS_DECIMAL || this->seconds_mode_ == SECONDS_COUNTDOWN)
+    {
+        drawSecondDigits();
+    }
     this->leds_.Show();
     return true;
+}
+
+void LedMatrix::drawSecondHand()
+{
+    // helper functions
+    auto swap = [](int* a, int* b){ int temp = *a; *a = *b; *b = temp; };
+    auto draw = [&](int x, int y, double val){
+        if ((x >= 0) && (x < MATRIX_WIDTH) && (y >= 0) && (y < MATRIX_HEIGHT) &&
+            (this->seconds_mode_ == SECONDS_HAND || x == 0 || x == MATRIX_WIDTH-1 || y == 0 || y == MATRIX_HEIGHT-1))
+        {
+            uint8_t v1 = 100 * val;
+            uint8_t v2 = 250 * val;
+            if (this->word_frame_.isSet(x, y))
+                this->leds_.SetPixelColor(xy(x, y), RgbColor(255, 255-v2, 255-v2));
+            else
+                this->leds_.SetPixelColor(xy(x, y), RgbColor(v1, 0, 0));
+        }
+    };
+
+    const int HAND_LENGTH = 1500;
+
+    uint16_t ms = (millis() - millis_delta_) % 1000;
+    double a = (second_ + ms/1000.0) * 2 * 3.1415 / 60;  // angle of the second hand
+
+    int x0 = MATRIX_WIDTH  / 2;
+    int y0 = MATRIX_HEIGHT / 2;
+    int x1 = x0 + HAND_LENGTH * sin(a);
+    int y1 = y0 - HAND_LENGTH * cos(a);
+
+    // --- Xiaolin Wu's line algorithm ---
+
+    int steep = abs(y1 - y0) > abs(x1 - x0);
+
+    // swap the co-ordinates if slope > 1 or we draw backwards 
+    if (steep)
+    {
+        swap(&x0, &y0);
+        swap(&x1, &y1);
+    }
+    if (x0 > x1)
+    {
+        swap(&x0, &x1);
+        swap(&y0, &y1);
+    }
+
+    // compute the slope
+    int dx = x1 - x0;
+    int dy = y1 - y0;
+    double gradient = (double)dy / dx;
+    if (dx == 0.0)
+        gradient = 1.0;
+
+    int xpxl1 = x0;
+    int xpxl2 = x1;
+    double intery = y0 + gradient; // first y-intersection for the main loop
+
+    // main loop
+    if (steep)
+        for (int x = xpxl1 + 1; x <= xpxl2 - 1; x++)
+        {
+            draw(floor(intery),   x, floor(intery) - intery + 1);
+            draw(floor(intery)+1, x, intery - floor(intery));
+            intery += gradient;
+        }
+    else
+        for (int x = xpxl1 + 1; x <= xpxl2 - 1; x++)
+        {
+            draw(x, floor(intery),   floor(intery) - intery + 1);
+            draw(x, floor(intery)+1, intery - floor(intery));
+            intery += gradient;
+        }
+}
+
+void LedMatrix::drawSecondDigits()
+{
+    auto draw = [&](int x, int y){
+        uint8_t blue_v1 = 100;
+        uint8_t blue_v2 = 150;
+        uint8_t red_v1  = 0;
+        uint8_t red_v2  = 0;
+        if (this->seconds_mode_ == SECONDS_COUNTDOWN)
+        {
+            blue_v1 = 0;
+            blue_v2 = 0;
+            red_v1  = 200;
+            red_v2  = 250;
+        }
+        if (this->word_frame_.isSet(x, y))
+            this->leds_.SetPixelColor(xy(x, y), RgbColor(255-blue_v2, 255-blue_v2-red_v2, 255-red_v2));
+        else
+            this->leds_.SetPixelColor(xy(x, y), RgbColor(red_v1, 0, blue_v1));
+    };
+
+    const bool bits[10][45] = { { 0, 1, 1, 1, 0,   // 0
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  0, 1, 1, 1, 0 },
+                                { 0, 0, 1, 1, 0,   // 1
+                                  0, 1, 0, 1, 0,
+                                  1, 0, 0, 1, 0,
+                                  0, 0, 0, 1, 0,
+                                  0, 0, 0, 1, 0,
+                                  0, 0, 0, 1, 0,
+                                  0, 0, 0, 1, 0,
+                                  0, 0, 0, 1, 0,
+                                  0, 0, 0, 1, 0 },
+                                { 0, 1, 1, 1, 0,   // 2
+                                  1, 0, 0, 0, 1,
+                                  0, 0, 0, 0, 1,
+                                  0, 0, 0, 0, 1,
+                                  0, 1, 1, 1, 0,
+                                  1, 0, 0, 0, 0,
+                                  1, 0, 0, 0, 0,
+                                  1, 0, 0, 0, 0,
+                                  1, 1, 1, 1, 1 },
+                                { 1, 1, 1, 1, 0,   // 3
+                                  0, 0, 0, 0, 1,
+                                  0, 0, 0, 0, 1,
+                                  0, 0, 0, 0, 1,
+                                  0, 1, 1, 1, 0,
+                                  0, 0, 0, 0, 1,
+                                  0, 0, 0, 0, 1,
+                                  0, 0, 0, 0, 1,
+                                  1, 1, 1, 1, 0 },
+                                { 1, 0, 0, 0, 1,   // 4
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  0, 1, 1, 1, 1,
+                                  0, 0, 0, 0, 1,
+                                  0, 0, 0, 0, 1,
+                                  0, 0, 0, 0, 1,
+                                  0, 0, 0, 0, 1 },
+                                { 1, 1, 1, 1, 1,   // 5
+                                  1, 0, 0, 0, 0,
+                                  1, 0, 0, 0, 0,
+                                  1, 0, 0, 0, 0,
+                                  0, 1, 1, 1, 0,
+                                  0, 0, 0, 0, 1,
+                                  0, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  0, 1, 1, 1, 0 },
+                                { 0, 1, 1, 1, 0,   // 6
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 0,
+                                  1, 0, 0, 0, 0,
+                                  1, 1, 1, 1, 0,
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  0, 1, 1, 1, 0 },
+                                { 1, 1, 1, 1, 1,   // 7
+                                  0, 0, 0, 0, 1,
+                                  0, 0, 0, 0, 1,
+                                  0, 0, 0, 1, 0,
+                                  0, 0, 0, 1, 0,
+                                  0, 0, 1, 0, 0,
+                                  0, 0, 1, 0, 0,
+                                  0, 1, 0, 0, 0,
+                                  0, 1, 0, 0, 0 },
+                                { 0, 1, 1, 1, 0,   // 8
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  0, 1, 1, 1, 0,
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  0, 1, 1, 1, 0 },
+                                { 0, 1, 1, 1, 0,   // 9
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  0, 1, 1, 1, 1,
+                                  0, 0, 0, 0, 1,
+                                  0, 0, 0, 0, 1,
+                                  1, 0, 0, 0, 1,
+                                  0, 1, 1, 1, 0 },
+                              };
+    uint8_t sec = second_;
+    if (this->seconds_mode_ == SECONDS_COUNTDOWN)
+    {
+        sec = 59 - second_;
+        if (second_ < 9)  // hold "00" for 10 seconds
+            sec = 0;
+    }
+    uint8_t sec1  = sec % 10;
+    uint8_t sec10 = sec / 10;
+
+    uint8_t sec1_offset_x = 3;
+
+    if ((this->seconds_mode_ != SECONDS_COUNTDOWN) || (sec10 > 0))
+    {
+        for (int i = 0; i < 45; i++)
+        {
+            uint8_t x = 1 + i % 5;
+            uint8_t y = 1 + i / 5;
+            if (bits[sec10][i])
+                draw(x, y);
+        }
+        sec1_offset_x = 6;
+    }
+    for (int i = 0; i < 45; i++)
+    {
+        uint8_t x = 1 + sec1_offset_x + i % 5;
+        uint8_t y = 1 + i / 5;
+        if (bits[sec1][i])
+            draw(x, y);
+    }
 }

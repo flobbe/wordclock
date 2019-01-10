@@ -17,6 +17,14 @@ class LedMatrix
 
 public:
 
+    typedef enum {
+        SECONDS_HIDDEN    = 0,  // do not show seconds
+        SECONDS_HAND      = 1,  // draw a second hand
+        SECONDS_DOT       = 2,  // draw only the tip of the second hand
+        SECONDS_DECIMAL   = 3,  // write the numbers over the entire display
+        SECONDS_COUNTDOWN = 4   // like SECONDS_DECIMAL but as countdown
+    } SecondMode;
+
     LedMatrix();
 
     void setup();
@@ -25,6 +33,7 @@ public:
 
     void setTime(const uint8_t hour, const uint8_t minute, const uint8_t second);
 
+    void setSecondsMode(uint8_t seconds_mode);
     void setSplashScreen(uint8_t splash_idx);
 
     void setBrightness(uint8_t value);
@@ -62,6 +71,7 @@ private:
     State     current_state_;
     uint8_t   current_splash_idx_;
     uint8_t   current_transition_idx_;
+    uint8_t   seconds_mode_;
     uint8_t   update_screen_progress_;
     RgbColor  color_words_;
 
@@ -83,6 +93,9 @@ private:
     // time transition functions:
     bool transFade();
     bool transSetHard();
+
+    void drawSecondHand();
+    void drawSecondDigits();
 
 };
 
