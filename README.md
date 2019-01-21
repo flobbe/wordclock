@@ -36,5 +36,6 @@ I used the following components:
 
 The following software libraries are used and can be installed via the Arduino IDE "Library Manager":
 
- - `NeoPixelBus` by `Makuna` _(version >= 2.4.1)_
+ - `NeoPixelBus` by `Makuna`         _(version >= 2.4.1)_
+ - `MQTT`        by `Joel Gaehwiler` _(version >= 2.4.1)_
 

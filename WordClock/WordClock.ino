@@ -18,6 +18,10 @@
 #include "configuration.h"
 #include "LedMatrix.h"
 
+#if MQTT_ENABLED
+    #include <MQTT.h>  // "MQTT" by Joel Gaehwiler (v2.4.1) -- https://github.com/256dpi/arduino-mqtt
+#endif
+
 
 
 // --------------------------------------------------
@@ -31,6 +35,11 @@ time_t    last_sync_time;  // last time, system time was updated from ntp server
 
 LedMatrix led_matrix;
 
+#if MQTT_ENABLED
+    WiFiClient network;
+    MQTTClient mqttClient;
+    TaskHandle_t taskmqtt;
+#endif
 
 // --------------------------------------------------
 
@@ -44,6 +53,9 @@ void printfln_P(const char *fmt, ...)
     vsnprintf_P(buf, LOG_SIZE_MAX, fmt, ap);
     va_end(ap);
     Serial.println(buf);
+#if MQTT_ENABLED
+    mqttClient.publish("tele/" THIS_HOST_NAME "/LOG", buf);
+#endif
 }
 
 // --------------------------------------------------
@@ -91,6 +103,9 @@ void initOTA()
     ArduinoOTA.setHostname(THIS_HOST_NAME);
     ArduinoOTA.onStart([]()
                 {
+#if MQTT_ENABLED
+                    vTaskSuspend(taskmqtt);
+#endif
                 })
               .onEnd([]()
                 {
@@ -132,6 +147,10 @@ void setup()
     getNTPTime();
 
     xTaskCreate(taskOTA, "OTA Task", 10000, NULL, 1, NULL);
+
+#if MQTT_ENABLED
+    xTaskCreate(taskMQTT, "MQTT Task", 10000, NULL, 1, &taskmqtt);
+#endif
 }
 
 
@@ -201,3 +220,58 @@ void taskOTA(void* parameter)
         vTaskDelay(100);
     }
 }
+
+
+#if MQTT_ENABLED
+
+void messageReceived(String &topic, String &payload)
+{
+    auto handleIntRequest = [&](String command, String log_name, int min_value, int max_value, void (*callback)(long)) {
+        if (topic == "cmnd/" MQTT_DEVICE_ID "/" + command)
+        {
+            long payloadInt = payload.toInt();
+            if (payloadInt >= min_value && payloadInt <= max_value)
+            {
+                callback(payloadInt);
+                mqttClient.publish("tele/" MQTT_DEVICE_ID "/" + command, String(payloadInt));
+            }
+            else
+                LOG_PRINTFLN("invalid argument to set %s '%s'. possible values: [%d..%d]", log_name, payload, min_value, max_value);
+        }
+    };
+
+    static uint8_t r = 0, g = 0, b = 0;
+    LOG_PRINTFLN("incoming: %s - %s", topic.c_str(), payload.c_str());
+    handleIntRequest("restart",     "restart uC",       1,   1, [](long int_arg){ ESP.restart(); });
+    handleIntRequest("brightness",  "brightness",       0, 100, [](long int_arg){ led_matrix.setBrightness(int_arg * 254 / 100 + 1); });
+    handleIntRequest("color/red",   "word color red",   0, 100, [](long int_arg){ r = int_arg * 255 / 100; led_matrix.setWordColor(r, g, b); });
+    handleIntRequest("color/green", "word color green", 0, 100, [](long int_arg){ g = int_arg * 255 / 100; led_matrix.setWordColor(r, g, b); });
+    handleIntRequest("color/blue",  "word color blue",  0, 100, [](long int_arg){ b = int_arg * 255 / 100; led_matrix.setWordColor(r, g, b); });
+    handleIntRequest("seconds",     "seconds mode",     0,   4, [](long int_arg){ led_matrix.setSecondsMode(int_arg); });
+    handleIntRequest("splash",      "splash screen",    0,   1, [](long int_arg){ led_matrix.setSplashScreen(int_arg); });
+}
+void taskMQTT(void* parameter)
+{
+    mqttClient.begin(MQTT_BROKER_IP, network);
+    mqttClient.onMessage(messageReceived);
+    while (true)
+    {
+        if (!mqttClient.connected())
+        {
+            Serial.print("connecting to MQTT broker ... ");
+            if (mqttClient.connect(THIS_HOST_NAME, MQTT_USERNAME, MQTT_PASSWORD))
+            {
+                Serial.println("done.");
+                mqttClient.subscribe("cmnd/" MQTT_DEVICE_ID "/#"); // subscribe to all command topics for this device
+            }
+            else
+            {
+                Serial.println("FAILED!");
+            }
+        }
+        mqttClient.loop();
+        vTaskDelay(1);
+    } // while (true)
+}
+
+#endif

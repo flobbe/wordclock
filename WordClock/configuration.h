@@ -7,6 +7,12 @@
 
 #define THIS_HOST_NAME            "wordclock"
 
+#define MQTT_ENABLED              false
+#define MQTT_BROKER_IP            "192.168.5.55"
+#define MQTT_USERNAME             "my-mqtt-user"
+#define MQTT_PASSWORD             "my-mqtt-password"
+#define MQTT_DEVICE_ID            THIS_HOST_NAME
+
 #define TIME_NTP_SERVER           "ptbtime1.ptb.de", "ptbtime2.ptb.de", "pool.ntp.org"
 #define TIME_POSIX_TIMEZONE_STR   "CET-1CEST,M3.5.0,M10.5.0/3"  // germany/berlin ; see https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html
 #define TIME_SYNC_INTERVAL_SEC    5 *   60       // update system clock over ntp [in seconds]
