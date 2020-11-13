@@ -2,6 +2,9 @@
 
 This is my DIY version of a word clock, which shows the time as it is spoken.
 It consists of 143 LEDs (13 x 11) behind a predefined letter layout.
+
+![](images/wordclock.jpg)
+
 Unlike many other word clock implementations it can express every minute of the day (not just every fifth).
 
 
@@ -18,6 +21,28 @@ I used the following components:
  - 3D printed socket for the LEDs, see below
  - frosted acrylic glass (3 mm) to diffuse the light (alternatively semi-transparent paper will also work)
  - The letter matrix made of black cardboard cut out by laser, see below
+
+
+## 3D printed socket for the LED strips
+
+You will find the [OpenSCAD](https://www.openscad.org/) model (and also a generated .stl file) to hold the LED strips in place in the 3d-print folder:
+[wordclock_led_boxes.scad](./3d-print/wordclock_led_boxes.scad)
+
+![](images/print-result.jpg)
+
+
+## Laser cut layout
+
+For the letter layout there is a [.svg file](./letter-layout/layout-13x11-path.svg).
+This has to be cut out of a 30 cm x 30 cm piece of cardboard.
+
+![](images/laser-cut-result.jpg)
+
+
+## Light scattering
+
+For an even illumination of each letter I used a 3 mm frosted acrylic glass,
+which I cut into small pieces 15.7 mm x 18.5 mm each, to fit into the 3D printed LED socket.
 
 
 ## Software compilation
