@@ -65,16 +65,25 @@ void initWiFi()
     Serial.printf("Connecting to WiFi %s ", WIFI_SSID);
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    while (WiFi.status() != WL_CONNECTED)
+    uint8_t timeout = 20; // seconds
+    while (WiFi.status() != WL_CONNECTED && timeout > 0)
     {
-        delay(500);
+        delay(1000);
         Serial.printf(".");
+        timeout--;
     }
-    Serial.printf(" done\n");
-    Serial.printf("IP address: ");
-    Serial.println(WiFi.localIP());
-//    LOG_PRINTFLN("Connected to WiFi");
-//    LOG_PRINTFLN("IP: %s", WiFi.localIP().toString().c_str());
+    if (timeout > 0)
+    {
+      Serial.println(" done");
+      LOG_PRINTFLN("Connected to WiFi");
+      LOG_PRINTFLN("IP address: %s", WiFi.localIP().toString().c_str());
+    }
+    else
+    {
+      Serial.println(" FAILED!");
+      led_matrix.showWifiError();
+      while (true) { delay(1000); }
+    }
 }
 
 void getNTPTime()

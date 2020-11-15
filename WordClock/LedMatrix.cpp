@@ -1,6 +1,12 @@
 
 #include "LedMatrix.h"
 
+#if defined(ESP32)
+    #include <WiFi.h>
+#elif defined(ESP8266)
+    #include <ESP8266WiFi.h>
+#endif
+
 #include "assertions.h"
 
 
@@ -12,7 +18,7 @@ LedMatrix::LedMatrix() :
     this->minute_                 = 0;
     this->second_                 = 0;
     this->current_state_          = S_SPLASH_SCREEN;
-    this->current_splash_idx_     = 1;
+    this->current_splash_idx_     = 0;
     this->current_transition_idx_ = 0;
     this->seconds_mode_           = SECONDS_DOT;
     this->update_screen_progress_ = 0;
@@ -41,7 +47,7 @@ void LedMatrix::update()
         {
             if ((this->*SPLASH_FUNCTIONS[this->current_splash_idx_])())
             {
-                changeState(S_TIME_MODE);
+                changeState((WiFi.status() != WL_CONNECTED) ? S_WIFI_CONNECT : S_TIME_MODE);
             }
         }
         else if (this->current_state_ == S_TIME_MODE)
@@ -50,6 +56,60 @@ void LedMatrix::update()
             {
                 this->needs_update_ = false;
             }
+        }
+        else if (this->current_state_ == S_WIFI_CONNECT)
+        {
+            static uint8_t spinner = 0;
+            static uint32_t lastSpin = millis();
+            this->leds_.ClearTo(BLACK);
+            for (uint8_t i = 0; i < 4; i++)
+            {
+                this->leds_.SetPixelColor(xy(LETTERS_WIFI_XY[i][0], LETTERS_WIFI_XY[i][1]), WHITE);
+            }
+            this->leds_.SetPixelColor(xy(WIFI_SPINNER_XY[spinner][0], WIFI_SPINNER_XY[spinner][1]), YELLOW);
+            if (millis() - lastSpin > 100)
+            {
+                lastSpin = millis();
+                spinner = (spinner + 1) % 14;
+                if (WiFi.status() == WL_CONNECTED)
+                {
+                    changeState(S_WIFI_OK);
+                }
+            }
+            this->leds_.Show();
+        }
+        else if (this->current_state_ == S_WIFI_OK)
+        {
+            this->leds_.ClearTo(BLACK);
+            for (uint8_t i = 0; i < 4; i++)
+            {
+                this->leds_.SetPixelColor(xy(LETTERS_WIFI_XY[i][0], LETTERS_WIFI_XY[i][1]), GREEN);
+            }
+            this->leds_.Show();
+            delay(1000);
+            this->leds_.ClearTo(BLACK);
+            this->leds_.Show();
+            changeState(S_TIME_MODE);
+        }
+        else if (this->current_state_ == S_WIFI_ERROR)
+        {
+            static bool toggle = true;
+            static uint32_t lastBlink = millis();
+            this->leds_.ClearTo(BLACK);
+            for (uint8_t i = 0; i < 4; i++)
+            {
+                this->leds_.SetPixelColor(xy(LETTERS_WIFI_XY[i][0], LETTERS_WIFI_XY[i][1]), toggle ? RED: WHITE);
+            }
+            for (uint8_t i = 0; i < 2; i++)
+            {
+                this->leds_.SetPixelColor(xy(LETTERS_NO_XY[i][0], LETTERS_NO_XY[i][1]), toggle ? WHITE : RED);
+            }
+            if (millis() - lastBlink > 1000)
+            {
+                lastBlink = millis();
+                toggle = ! toggle;
+            }
+            this->leds_.Show();
         }
     }
     else
@@ -106,6 +166,19 @@ void LedMatrix::setWordColor(uint8_t red, uint8_t green, uint8_t blue)
 //    this->needs_update_ = true;
 }
 
+void LedMatrix::showWifiConnect()
+{
+    changeState(S_WIFI_CONNECT);
+}
+void LedMatrix::showWifiOk()
+{
+    changeState(S_WIFI_OK);
+}
+void LedMatrix::showWifiError()
+{
+    changeState(S_WIFI_ERROR);
+}
+
 void LedMatrix::setUpdateProgress(unsigned int progress, unsigned int total)
 {
     changeState(S_FWUPDATE_SCREEN);
@@ -140,7 +213,7 @@ void LedMatrix::nextEffect()
 
 void LedMatrix::disableLEDs()
 {
-    this->leds_.ClearTo({0,0,0});
+    this->leds_.ClearTo(BLACK);
     this->leds_.Show();
 }
 
@@ -159,7 +232,7 @@ bool LedMatrix::splashRandom()
     static uint32_t lastTrigger = millis();
 
     bool finished = false;
-    if (millis() - lastTrigger > 10) // execute every n milliseconds
+    if (millis() - lastTrigger > 20) // execute every n milliseconds
     {
         lastTrigger = millis();
         uint8_t x          = random(MATRIX_WIDTH);
